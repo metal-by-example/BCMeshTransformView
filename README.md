@@ -3,6 +3,8 @@ BCMeshTransformView
 
 `BCMeshTransformView` makes it easy to apply a mesh transform to a view hierarchy. It's inspired by a private `CALayer` property `meshTransform` and its value class `CAMeshTransform`. I **highly** recommend taking look at [the blog post on those two](http://ciechanowski.me/blog/2014/05/14/mesh-transforms/) as it explains the concepts in depth and hopefully justifies some API choices I made.
 
+[This repository](https://github.com/metal-by-example/BCMeshTransformView) has been converted to use Metal instead of using OpenGL ES, as [the original](https://github.com/Ciechan/BCMeshTransformView) did.
+
 
 ## Features
 
@@ -14,21 +16,12 @@ The demo app contains a few examples of how a mesh transform works and what it c
 
 ## Installation
 
-`BCMeshTransformView` is available via CocoaPods:
-
-```
-pod 'BCMeshTransformView'
-```
-
-Alternatively, you can copy the contents of `BCMeshTransformView` folder to your project and include `BCMeshTransformView.h`.
+To use, copy the contents of `BCMeshTransformView` folder to your project and include `BCMeshTransformView.h`.
 
 ## Requirements
 
-- iOS 7.0
+- iOS 11.0
 - ARC
-- GLKit framework
-
-You may optionally include OpenGL ES framework, as this will enable [frame capturing](https://developer.apple.com/library/ios/recipes/xcode_help-debugger/articles/debugging_opengl_es_frame.html).
 
 ## Using `BCMeshTransformView`
 	
@@ -125,7 +118,7 @@ This transform will perform a very simple skew transform, and you can tweak it f
 
 Although `BCMeshTransform` is the default base class, the mutable counterpart, `BCMutableMeshTransform`, is much more convenient to use.
 
-##Animations
+## Animations
 
 All versions of block-based `UIView` animations are supported, **apart** from keyframe and spring animations. Animation always begins from the current state, regardless of presence of `UIViewAnimationOptionBeginFromCurrentState` flag.
 
@@ -134,7 +127,7 @@ For an animation to occur, the current and final meshes have to be compatible:
 - they must have the same number of faces
 - the faces at corresponding indexes must point to the same vertices, (their `indices` arrays must be equal)
 
-##Lighting
+## Lighting
 
 `BCMeshTransformView` supports a simple lighting model in a form of diffuse lighting with pure white light:
 
@@ -188,13 +181,14 @@ A very convenient map method makes it very easy to modify existing `BCMutableMes
 ```
 - (void)mapVerticesUsingBlock:(BCMeshVertex (^)(BCMeshVertex vertex, NSUInteger vertexIndex))block;
 ```
-# Caveats
+
+## Caveats
 
 * `BCMeshTransformView` is stable and works, but it's still in beta. It won't break down unexpectedly, but I haven't seriously battle tested the class, so there still might be some edge cases when something doesn't behave as intended.
 
 * Mesh generation is computationally heavy and may be slow in Debug mode, especially on older devices. Compiling with optimizations (Release has -Os by default) should provide major improvements.
 
-* Since rendering is OpenGL based the `BCMeshTransformView` implicitly clips its content to bounds, regardless of `clipsToBounds` property state.
+* Since rendering is Metal-based, the `BCMeshTransformView` implicitly clips its content to bounds, regardless of `clipsToBounds` property state.
 
 * If semi-transparent faces overlap, only the frontmost one will be rendered. The original `CAMeshTransform`  z-sorts its triangles, however, I'm using a depth buffer to resolve the relative z-order of triangles.
 
