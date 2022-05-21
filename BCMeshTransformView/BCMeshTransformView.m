@@ -5,27 +5,44 @@
 //  Copyright (c) 2014 Bartosz Ciechanowski. All rights reserved.
 //
 
-#import <GLKit/GLKit.h>
-#import <OpenGLES/ES2/gl.h>
-#import <OpenGLES/ES2/glext.h>
+#import <Metal/Metal.h>
+#import <MetalKit/MetalKit.h>
 
 #import "BCMeshTransformView.h"
 #import "BCMeshContentView.h"
 
 #import "BCMeshShader.h"
-#import "BCMeshBuffer.h"
+#import "BCMesh.h"
 #import "BCMeshTexture.h"
 
 #import "BCMeshTransformAnimation.h"
 
 #import "BCMutableMeshTransform+Convenience.h"
 
-@interface BCMeshTransformView() <GLKViewDelegate>
+typedef struct {
+    simd_float4x4 viewProjectionMatrix;
+    simd_float3x3 normalMatrix;
+    simd_float3 lightDirection;
+    float diffuseFactor;
+} BCMeshUniforms;
 
-@property (nonatomic, strong) GLKView *glkView;
+static simd_float4x4 BCMatrix4MakeTranslation(float, float, float);
+static simd_float4x4 BCMatrix4MakeScale(float, float, float);
+static simd_float4x4 BCMatrix4Make(float, float, float, float,
+                                   float, float, float, float,
+                                   float, float, float, float,
+                                   float, float, float, float);
+static simd_float3x3 BCMatrix4GetUpperLeft3x3(simd_float4x4);
+
+@interface BCMeshTransformView() <MTKViewDelegate>
+
+@property (nonatomic, strong) id<MTLDevice> device;
+@property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
+@property (nonatomic, strong) id<MTLDepthStencilState> depthStencilState;
+@property (nonatomic, strong) MTKView *mtkView;
 
 @property (nonatomic, strong) BCMeshShader *shader;
-@property (nonatomic, strong) BCMeshBuffer *buffer;
+@property (nonatomic, strong) BCMesh *mesh;
 @property (nonatomic, strong) BCMeshTexture *texture;
 
 @property (nonatomic, strong) CADisplayLink *displayLink;
@@ -41,17 +58,6 @@
 
 
 @implementation BCMeshTransformView
-
-+ (EAGLContext *)renderingContext
-{
-    static EAGLContext *context;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES2];
-    });
-    
-    return context;
-}
 
 - (id)initWithFrame:(CGRect)frame
 {
@@ -75,13 +81,18 @@
 - (void)commonInit
 {
     self.opaque = NO;
+
+    _device = MTLCreateSystemDefaultDevice();
+    _commandQueue = [_device newCommandQueue];
     
-    _glkView = [[GLKView alloc] initWithFrame:self.bounds context:[BCMeshTransformView renderingContext]];
-    _glkView.delegate = self;
-    _glkView.drawableDepthFormat = GLKViewDrawableDepthFormat16;
-    _glkView.opaque = NO;
+    _mtkView = [[MTKView alloc] initWithFrame:self.bounds device:_device];
+    _mtkView.delegate = self;
+    _mtkView.depthStencilPixelFormat = MTLPixelFormatDepth32Float;
+    _mtkView.enableSetNeedsDisplay = YES;
+    _mtkView.paused = YES;
+    _mtkView.opaque = NO;
     
-    [super addSubview:_glkView];
+    [super addSubview:_mtkView];
     
     _diffuseLightFactor = 1.0f;
     _lightDirection = BCPoint3DMake(0.0, 0.0, 1.0);
@@ -110,12 +121,15 @@
     // of a current animation block and getting animated
     self.dummyAnimationView = [UIView new];
     [contentViewWrapperView addSubview:self.dummyAnimationView];
-    
-    _shader = [BCMeshShader new];
-    _buffer = [BCMeshBuffer new];
-    _texture = [BCMeshTexture new];
-    
-    [self setupGL];
+
+    _mesh = [[BCMesh alloc] initWithDevice:_device];
+    _texture = [[BCMeshTexture alloc] initWithDevice:_device];
+    _shader = [[BCMeshShader alloc] initWithDevice:_device
+                                  vertexDescriptor:_mesh.vertexDescriptor
+                                  colorPixelFormat:_mtkView.colorPixelFormat
+                                  depthPixelFormat:_mtkView.depthStencilPixelFormat];
+
+    [self setupMetal];
     
     self.meshTransform = [BCMutableMeshTransform identityMeshTransformWithNumberOfRows:1 numberOfColumns:1];
 }
@@ -124,7 +138,7 @@
 {
     [super layoutSubviews];
     
-    self.glkView.frame = self.bounds;
+    self.mtkView.frame = self.bounds;
     self.contentView.bounds = self.bounds;
 }
 
@@ -159,27 +173,27 @@
 {
     _presentationMeshTransform = [presentationMeshTransform copy];
     
-    [self.buffer fillWithMeshTransform:presentationMeshTransform
-                         positionScale:[self positionScaleWithDepthNormalization:self.presentationMeshTransform.depthNormalization]];
-    [self.glkView setNeedsDisplay];
+    [self.mesh fillWithMeshTransform:presentationMeshTransform
+                       positionScale:[self positionScaleWithDepthNormalization:self.presentationMeshTransform.depthNormalization]];
+    [self.mtkView setNeedsDisplay];
 }
 
 - (void)setLightDirection:(BCPoint3D)lightDirection
 {
     _lightDirection = lightDirection;
-    [self.glkView setNeedsDisplay];
+    [self.mtkView setNeedsDisplay];
 }
 
 - (void)setDiffuseLightFactor:(float)diffuseLightFactor
 {
     _diffuseLightFactor = diffuseLightFactor;
-    [self.glkView setNeedsDisplay];
+    [self.mtkView setNeedsDisplay];
 }
 
 - (void)setSupplementaryTransform:(CATransform3D)supplementaryTransform
 {
     _supplementaryTransform = supplementaryTransform;
-    [self.glkView setNeedsDisplay];
+    [self.mtkView setNeedsDisplay];
 }
 
 - (void)setAnimation:(BCMeshTransformAnimation *)animation
@@ -196,7 +210,7 @@
         // next run loop tick
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0)), dispatch_get_main_queue(), ^{
             [self.texture renderView:self.contentView];
-            [self.glkView setNeedsDisplay];
+            [self.mtkView setNeedsDisplay];
             
             self.pendingContentRendering = NO;
         });
@@ -233,63 +247,80 @@
 }
 
 
-#pragma mark - OpenGL Handling
+#pragma mark - Metal Handling
 
-- (void)setupGL
+- (void)setupMetal
 {
-    [EAGLContext setCurrentContext:[BCMeshTransformView renderingContext]];
-    
-    [self.shader loadProgram];
-    [self.buffer setupOpenGL];
-    [self.texture setupOpenGL];
-    
     // force initial texture rendering
-    [self.texture renderView:self.contentView];
-    
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glEnable(GL_DEPTH_TEST);
+    //[_texture renderView:self.contentView];
+
+    _mtkView.clearColor = MTLClearColorMake(0, 0, 0, 0);
+
+    MTLDepthStencilDescriptor *depthStencilDescriptor = [MTLDepthStencilDescriptor new];
+    depthStencilDescriptor.depthWriteEnabled = YES;
+    depthStencilDescriptor.depthCompareFunction = MTLCompareFunctionLessEqual;
+    _depthStencilState = [_device newDepthStencilStateWithDescriptor:depthStencilDescriptor];
 }
 
-- (void)glkView:(GLKView *)view drawInRect:(CGRect)rect
-{
-    GLKMatrix4 viewProjectionMatrix = [self transformMatrix];
-    GLKMatrix3 normalMatrix = GLKMatrix4GetMatrix3(viewProjectionMatrix);
-    
-    bool invertible;
-    normalMatrix = GLKMatrix3InvertAndTranspose(normalMatrix, &invertible);
+- (void)mtkView:(nonnull MTKView *)view drawableSizeWillChange:(CGSize)size {
+}
+
+- (void)drawInMTKView:(nonnull MTKView *)view {
+    if (self.shader.renderPipelineState == nil) {
+        return;
+    }
+
+    MTLRenderPassDescriptor *passDescriptor = view.currentRenderPassDescriptor;
+    if (passDescriptor == nil) {
+        return;
+    }
+
+    simd_float4x4 viewProjectionMatrix = [self transformMatrix];
+    simd_float3x3 normalMatrix = BCMatrix4GetUpperLeft3x3(viewProjectionMatrix);
+
+    normalMatrix = simd_transpose(simd_inverse(normalMatrix));
     
     // Letting the final transform flatten the vertices so that they
     // won't get clipped by near/far planes that easily
     const float ZFlattenScale = 0.0005;
-    viewProjectionMatrix = GLKMatrix4Multiply(GLKMatrix4MakeScale(1.0, 1.0, ZFlattenScale), viewProjectionMatrix);
+    viewProjectionMatrix = simd_mul(BCMatrix4MakeScale(1.0, 1.0, ZFlattenScale), viewProjectionMatrix);
     
-    GLKVector3 lightDirection = GLKVector3Normalize(GLKVector3Make(_lightDirection.x, _lightDirection.y, _lightDirection.z));
-    
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    
-    glBindVertexArrayOES(self.buffer.VAO);
-    
-    glUseProgram(self.shader.program);
-    glUniform1i(self.shader.texSamplerUniform, 0);
-    glUniform3fv(self.shader.lightDirectionUniform, 1, lightDirection.v);
-    glUniform1f(self.shader.diffuseFactorUniform, _diffuseLightFactor);
-    glUniformMatrix4fv(self.shader.viewProjectionMatrixUniform, 1, 0, viewProjectionMatrix.m);
-    glUniformMatrix3fv(self.shader.normalMatrixUniform, 1, 0, normalMatrix.m);
-    
-    
-    glBindTexture(GL_TEXTURE_2D, self.texture.texture);
-    
-    glDrawElements(GL_TRIANGLES, self.buffer.indiciesCount, GL_UNSIGNED_INT, 0);
-    
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glUseProgram(0);
-    glBindVertexArrayOES(0);
+    simd_float3 lightDirection = simd_normalize(simd_make_float3(_lightDirection.x, _lightDirection.y, _lightDirection.z));
+
+    id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+
+    id<MTLRenderCommandEncoder> renderCommandEncoder = [commandBuffer renderCommandEncoderWithDescriptor:passDescriptor];
+
+    [renderCommandEncoder setRenderPipelineState:self.shader.renderPipelineState];
+    [renderCommandEncoder setDepthStencilState:self.depthStencilState];
+
+    BCMeshUniforms uniforms;
+    uniforms.lightDirection = lightDirection;
+    uniforms.diffuseFactor = _diffuseLightFactor;
+    uniforms.viewProjectionMatrix = viewProjectionMatrix;
+    uniforms.normalMatrix = normalMatrix;
+
+    [renderCommandEncoder setVertexBuffer:self.mesh.vertexBuffer offset:0 atIndex:0];
+    [renderCommandEncoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:1];
+    [renderCommandEncoder setFragmentTexture:self.texture.texture atIndex:0];
+
+    [renderCommandEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                                     indexCount:self.mesh.indexCount
+                                      indexType:MTLIndexTypeUInt32
+                                    indexBuffer:self.mesh.indexBuffer
+                              indexBufferOffset:0];
+
+    [renderCommandEncoder endEncoding];
+
+    [commandBuffer presentDrawable:view.currentDrawable];
+
+    [commandBuffer commit];
 }
 
 #pragma mark - Geometry
 
 
-- (GLKMatrix4)transformMatrix
+- (simd_float4x4)transformMatrix
 {
     float xScale = self.bounds.size.width;
     float yScale = self.bounds.size.height;
@@ -301,32 +332,32 @@
     
     
     CATransform3D m = self.supplementaryTransform;
-    GLKMatrix4 matrix = GLKMatrix4Identity;
+    simd_float4x4 matrix = matrix_identity_float4x4;
     
-    matrix = GLKMatrix4Multiply(GLKMatrix4MakeTranslation(-0.5f, -0.5f, 0.0f), matrix);
-    matrix = GLKMatrix4Multiply(GLKMatrix4MakeScale(xScale, yScale, zScale), matrix);
+    matrix = simd_mul(BCMatrix4MakeTranslation(-0.5f, -0.5f, 0.0f), matrix);
+    matrix = simd_mul(BCMatrix4MakeScale(xScale, yScale, zScale), matrix);
     
     // at this point we're in a "point-sized" world,
     // the translations and projections will behave correctly
     
-    matrix = GLKMatrix4Multiply(GLKMatrix4Make(m.m11, m.m12, m.m13, m.m14,
-                                               m.m21, m.m22, m.m23, m.m24,
-                                               m.m31, m.m32, m.m33, m.m34,
-                                               m.m41, m.m42, m.m43, m.m44), matrix);
+    matrix = simd_mul(BCMatrix4Make(m.m11, m.m12, m.m13, m.m14,
+                                    m.m21, m.m22, m.m23, m.m24,
+                                    m.m31, m.m32, m.m33, m.m34,
+                                    m.m41, m.m42, m.m43, m.m44), matrix);
     
-    matrix = GLKMatrix4Multiply(GLKMatrix4MakeScale(invXScale, invYScale, invZScale), matrix);
-    matrix = GLKMatrix4Multiply(GLKMatrix4MakeScale(2.0, -2.0, 1.0), matrix);
+    matrix = simd_mul(BCMatrix4MakeScale(invXScale, invYScale, invZScale), matrix);
+    matrix = simd_mul(BCMatrix4MakeScale(2.0, -2.0, 1.0), matrix);
     
     return matrix;
 }
 
-- (GLKVector3)positionScaleWithDepthNormalization:(NSString *)depthNormalization
+- (simd_float3)positionScaleWithDepthNormalization:(NSString *)depthNormalization
 {
     float xScale = self.bounds.size.width;
     float yScale = self.bounds.size.height;
     float zScale = [self zScaleForDepthNormalization:depthNormalization];
     
-    return GLKVector3Make(xScale, yScale, zScale);
+    return simd_make_float3(xScale, yScale, zScale);
 }
 
 
@@ -351,7 +382,7 @@
         return block(self.bounds.size);
     }
     
-    return 0.0;
+    return 1.0;
 }
 
 #pragma mark - Warning Methods
@@ -365,3 +396,44 @@
 }
 
 @end
+
+#pragma mark - Matrix Utilities
+
+simd_float4x4 BCMatrix4MakeTranslation(float tx, float ty, float tz) {
+    return (simd_float4x4){{
+        {  1,  0,  0, 0 },
+        {  0,  1,  0, 0 },
+        {  0,  0,  1, 0 },
+        { tx, ty, tz, 1 },
+    }};
+}
+
+simd_float4x4 BCMatrix4MakeScale(float sx, float sy, float sz) {
+    return (simd_float4x4){{
+        { sx,  0,  0, 0 },
+        {  0, sy,  0, 0 },
+        {  0,  0, sz, 0 },
+        {  0,  0,  0, 1 },
+    }};
+}
+
+simd_float4x4 BCMatrix4Make(float m00, float m01, float m02, float m03,
+                            float m10, float m11, float m12, float m13,
+                            float m20, float m21, float m22, float m23,
+                            float m30, float m31, float m32, float m33)
+{
+    return (simd_float4x4){{
+        { m00, m01, m02, m03 },
+        { m10, m11, m12, m13 },
+        { m20, m21, m22, m23 },
+        { m30, m31, m32, m33 },
+    }};
+}
+
+simd_float3x3 BCMatrix4GetUpperLeft3x3(simd_float4x4 M) {
+    return (simd_float3x3){{
+        { M.columns[0][0], M.columns[0][1], M.columns[0][2] },
+        { M.columns[1][0], M.columns[1][1], M.columns[1][2] },
+        { M.columns[2][0], M.columns[2][1], M.columns[2][2] },
+    }};
+}

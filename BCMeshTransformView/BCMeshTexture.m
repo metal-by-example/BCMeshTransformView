@@ -7,48 +7,37 @@
 
 #import "BCMeshTexture.h"
 
-#import <OpenGLES/ES2/gl.h>
-#import <OpenGLES/ES2/glext.h>
+@interface BCMeshTexture ()
+@property (nonatomic, strong) id<MTLDevice> device;
+@end
 
 @implementation BCMeshTexture
 
-- (void)setupOpenGL
-{
-    glGenTextures(1, &_texture);
-    glBindTexture(GL_TEXTURE_2D, _texture);
-    
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
-}
-
-- (void)dealloc
-{
-    if (_texture) {
-        glDeleteTextures(1, &_texture);
+- (instancetype)initWithDevice:(id<MTLDevice>)device {
+    if (self = [super init]) {
+        _device = device;
     }
+    return self;
 }
-
-
 
 - (void)renderView:(UIView *)view
 {
-    const CGFloat Scale = [UIScreen mainScreen].scale;
+    const CGFloat scale = [UIScreen mainScreen].scale;
     
-    GLsizei width = view.layer.bounds.size.width * Scale;
-    GLsizei height = view.layer.bounds.size.height * Scale;
-    
-    GLubyte *texturePixelBuffer = (GLubyte *)calloc(width * height * 4, sizeof(GLubyte));
+    NSUInteger width = view.layer.bounds.size.width * scale;
+    NSUInteger height = view.layer.bounds.size.height * scale;
+    NSUInteger bytesPerRow = width * 4;
+
+    void *imageBytes = NULL;
+    posix_memalign(&imageBytes, getpagesize(), bytesPerRow * height);
+    memset(imageBytes, 0, bytesPerRow * height);
     
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGContextRef context = CGBitmapContextCreate(texturePixelBuffer,
-                                                 width, height, 8, width * 4, colorSpace,
-                                                 kCGImageAlphaPremultipliedLast |
-                                                 kCGBitmapByteOrder32Big);
-    CGContextScaleCTM(context, Scale, Scale);
+    CGContextRef context = CGBitmapContextCreate(imageBytes,
+                                                 width, height, 8, bytesPerRow, colorSpace,
+                                                 kCGImageAlphaPremultipliedFirst |
+                                                 kCGBitmapByteOrder32Little);
+    CGContextScaleCTM(context, scale, scale);
     
     UIGraphicsPushContext(context);
     
@@ -56,16 +45,25 @@
     
     UIGraphicsPopContext();
 
-
     CGContextRelease(context);
     CGColorSpaceRelease(colorSpace);
-    
 
-    glBindTexture(GL_TEXTURE_2D, _texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, texturePixelBuffer);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    if (_texture == nil || _texture.width != width || _texture.height != height) {
+        MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                                     width:width
+                                                                                                    height:height
+                                                                                                 mipmapped:NO];
+        textureDescriptor.usage = MTLTextureUsageShaderRead;
+        textureDescriptor.storageMode = MTLStorageModeShared;
+        _texture = [self.device newTextureWithDescriptor:textureDescriptor];
+    }
 
-    free(texturePixelBuffer);
+    [_texture replaceRegion:MTLRegionMake2D(0, 0, width, height)
+                mipmapLevel:0
+                  withBytes:imageBytes
+                bytesPerRow:bytesPerRow];
+
+    free(imageBytes);
 }
 
 @end

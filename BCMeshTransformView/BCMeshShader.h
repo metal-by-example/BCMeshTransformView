@@ -6,6 +6,9 @@
 //
 
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+
+NS_ASSUME_NONNULL_BEGIN
 
 typedef NS_ENUM(NSInteger, BCVertexAttrib) {
     BCVertexAttribPosition,
@@ -15,15 +18,13 @@ typedef NS_ENUM(NSInteger, BCVertexAttrib) {
 
 @interface BCMeshShader : NSObject
 
-@property (nonatomic, readonly) GLuint program;
-@property (nonatomic, readonly) GLint viewProjectionMatrixUniform;
-@property (nonatomic, readonly) GLint normalMatrixUniform;
-@property (nonatomic, readonly) GLint lightDirectionUniform;
-@property (nonatomic, readonly) GLint diffuseFactorUniform;
+@property (nonatomic, nullable, readonly) id<MTLRenderPipelineState> renderPipelineState;
 
-@property (nonatomic, readonly) GLint texSamplerUniform;
-
-- (BOOL)loadProgram;
+- (instancetype)initWithDevice:(id<MTLDevice>)device
+              vertexDescriptor:(MTLVertexDescriptor *)vertexDescriptor
+              colorPixelFormat:(MTLPixelFormat)colorPixelFormat
+              depthPixelFormat:(MTLPixelFormat)depthPixelFormat;
 
 @end
 
+NS_ASSUME_NONNULL_END

@@ -32,7 +32,7 @@
     [self.view insertSubview:secretLabel atIndex:0];
     
     
-    UIView *container = [[UIView alloc] initWithFrame:UIEdgeInsetsInsetRect(self.transformView.bounds, UIEdgeInsetsMake(0, 0, 50, 0))];
+    UIView *container = [[UIView alloc] initWithFrame:UIEdgeInsetsInsetRect(self.transformView.bounds, UIEdgeInsetsMake(0, 0, 0, 0))];
     container.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     container.backgroundColor = [UIColor colorWithRed:0.85 green:0.25 blue:0.27 alpha:1];
     

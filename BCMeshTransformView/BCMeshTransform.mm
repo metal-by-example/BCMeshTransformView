@@ -132,6 +132,8 @@ NSString * const kBCDepthNormalizationAverage = @"average";
 
 @implementation BCMutableMeshTransform
 
+@dynamic depthNormalization;
+
 + (instancetype)meshTransform
 {
     return [[self alloc] init];

@@ -6,12 +6,14 @@
 //
 
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 
 @interface BCMeshTexture : NSObject
 
-@property (nonatomic, readonly) GLuint texture;
+@property (nonatomic, readonly) id<MTLTexture> texture;
 
-- (void)setupOpenGL;
+- (instancetype)initWithDevice:(id<MTLDevice>)device;
+
 - (void)renderView:(UIView *)view;
 
 @end
